@@ -164,8 +164,8 @@ samples	: dirs
 	find $(SAMPLES_BUILD_DIR) -type f -exec install {} $(SAMPLE_DOCS_DIR) \;
 
 shellwrappers:
-	@echo "Installing shell wrappers"
-	find $(S_BUILD_DIR) -type f -exec install {} ${PREFIX}/bin \;
+	#@echo "Installing shell wrappers"
+	#find $(S_BUILD_DIR) -type f -exec install {} ${PREFIX}/bin \;
 
 pipeline_templates:
 	@echo "Installing global pipeline templates in $(PREFIX)/global_pipeline_templates"
@@ -174,19 +174,19 @@ pipeline_templates:
 	#find $(T_BUILD_DIR) -path '*svn*' -prune -o -print -type d -exec install {} ${PREFIX} \;
 
 c_apps	:
-	@echo "Compiling C applications and installing in $(PREFIX)/bin"
-	${MAKE} -C $(C_BUILD_DIR)/cluster
-	@install $(C_BUILD_DIR)/cluster/cluster $(PREFIX)/bin
-	${MAKE} -C $(C_BUILD_DIR)/chado_record_uniq
-	@install $(C_BUILD_DIR)/chado_record_uniq/chado_record_uniq $(PREFIX)/bin
-	${MAKE} -C $(C_BUILD_DIR)/pangenome_profile_compare
-	@install $(C_BUILD_DIR)/pangenome_profile_compare/pangenome_profile_compare $(PREFIX)/bin
-	${MAKE} -C $(C_BUILD_DIR)/SnpClusterer
-	@install $(C_BUILD_DIR)/SnpClusterer/SnpClusterer $(PREFIX)/bin
+	#@echo "Compiling C applications and installing in $(PREFIX)/bin"
+	#${MAKE} -C $(C_BUILD_DIR)/cluster
+	#@install $(C_BUILD_DIR)/cluster/cluster $(PREFIX)/bin
+	#${MAKE} -C $(C_BUILD_DIR)/chado_record_uniq
+	#@install $(C_BUILD_DIR)/chado_record_uniq/chado_record_uniq $(PREFIX)/bin
+	#${MAKE} -C $(C_BUILD_DIR)/pangenome_profile_compare
+	#@install $(C_BUILD_DIR)/pangenome_profile_compare/pangenome_profile_compare $(PREFIX)/bin
+	#${MAKE} -C $(C_BUILD_DIR)/SnpClusterer
+	#@install $(C_BUILD_DIR)/SnpClusterer/SnpClusterer $(PREFIX)/bin
 
 r_scripts:
-	@echo "Installing R scripts to $(PREFIX)/bin"
-	find $(BUILD_DIR)/R -type f -exec install {} $(PREFIX)/bin \;
+	#@echo "Installing R scripts to $(PREFIX)/bin"
+	#find $(BUILD_DIR)/R -type f -exec install {} $(PREFIX)/bin \;
 
 
 END
