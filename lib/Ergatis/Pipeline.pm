@@ -38,9 +38,11 @@ Returns the ID of a given pipeline.
 =cut
 
 use strict;
+use warnings;
 use Carp;
 use Sys::Hostname;
 use IO::File;
+use Ergatis::Utils qw(build_twig create_progress_bar update_progress_bar handle_component_status_changes);
 
 umask(0000);
 
@@ -81,8 +83,8 @@ umask(0000);
 
         # If the 'block' argument was passed, run the code without the use of forking
         if ($args{block}) {
-            run_non_web($self, %args);
-            return;
+            my $success = run_non_web($self, %args);
+            return $success;
         }
 
         ## path must be defined and exist to run
@@ -308,8 +310,9 @@ umask(0000);
 
                 my $rc = 0xffff & system($final_run_command);
 
-                printf $debugfh
-                  "system(%s) returned %#04x: $rc for command $final_run_command\n"
+                print $debugfh
+                  "system() returned %#04x: $rc for command $final_run_command\n"
+                  #"system(%s) returned %#04x: $rc for command $final_run_command\n"
                   if $self->{debug};
                 if ( $rc == 0 ) {
                     print $debugfh "ran with normal exit\n" if $self->{debug};
@@ -402,10 +405,7 @@ umask(0000);
 
         chdir $run_dir
           || croak "Can't change to running directory $run_dir\n";
-        use POSIX qw(setsid);
-        setsid() or die "Can't start a new session: $!";
 
-        print $debugfh "got past the POSIX section\n" if $self->{debug};
         $self->_setup_environment( ergatis_cfg => $args{ergatis_cfg} );
         print $debugfh "got past ENV setup section\n" if $self->{debug};
 
@@ -543,40 +543,49 @@ umask(0000);
         print $debugfh "preparing to run $final_run_command\n"
           if $self->{debug};
 
-        my $rc = 0xffff & system($final_run_command);
+		# Run in the background
+		$final_run_command .= " &";
+		system($final_run_command);
 
-        printf $debugfh
-          "system(%s) returned %#04x: $rc for command $final_run_command\n"
-          if $self->{debug};
-        if ( $rc == 0 ) {
-            print $debugfh "ran with normal exit\n" if $self->{debug};
-        } elsif ( $rc == 0xff00 ) {
-            print $debugfh "command failed: $!\n" if $self->{debug};
-            croak
-              "Unable to run workflow command $final_run_command failed : $!\n";
-        } elsif ( ( $rc & 0xff ) == 0 ) {
-            $rc >>= 8;
-            print $debugfh "ran with non-zero exit status $rc\n"
-              if $self->{debug};
-            croak
-              "Unable to run workflow command $final_run_command failed : $!\n";
-        } else {
-            print $debugfh "ran with " if $self->{debug};
-            if ( $rc & 0x80 ) {
-                $rc &= ~0x80;
-                print $debugfh "coredump from " if $self->{debug};
-            }
-            print $debugfh "signal $rc\n" if $self->{debug};
-        }
+    	if ( $? == -1 ) {
+        	croak "failed to execute command ($final_run_command): $!\n";
+    	} elsif ( $? & 127 ) {
+         	my $out = sprintf "command ($final_run_command): child died with signal %d, %s coredump\n",
+                    ($? & 127),  ($? & 128) ? 'with' : 'without';
+        	croak ($out);
+    	}
+
+		# Program should have went through if $? = 0
+        print $debugfh "[$final_run_command] ran with normal exit\n" if $self->{debug};
 
         close $debugfh if $self->{debug};
 
-     # If 'block' is set to 1, wait for pipeline to return non-running state
+        # Create a progress bar to visually track progress
+        my $p_bar = create_progress_bar($self->{path}, $self->{id}) if $args{show_progress};
+
+       # If 'block' is set to 1, wait for pipeline to return non-running state
         my $p_state = '';
+        my $running_components = ();
+        my $component_list = ();
+		my %prev_component_states = ();
         do {
             $p_state = $self->pipeline_state;
-			sleep 60;
-        } while ( $p_state =~ /(running|pending|waiting|incomplete)/i );
+   			# First iteration will be undefined... populate hash with previous states
+			if (defined $component_list) {
+                foreach my $component (keys %$component_list) {
+                    $prev_component_states{$component} = $component_list->{$component}->{'state'};
+                }
+			}
+            $component_list = build_twig($self->{path});
+			if ($args{show_progress}) {
+			    update_progress_bar($p_bar, $component_list);
+		    } else {
+				if ( %prev_component_states ) {
+                    handle_component_status_changes($component_list, \%prev_component_states);
+                }
+		    }
+            sleep 60 if ( $p_state =~ /(running|pending|waiting|incomplete)/ );
+        } while ( $p_state =~ /(running|pending|waiting|incomplete)/ );
 
         # If end-state is complete, return 1.  Otherwise return 0
         return 1 if ($p_state eq 'complete');
@@ -645,11 +654,13 @@ umask(0000);
           '/usr/local/devel/ANNOTATION/EGC_utilities/WISE2/wise2.2.0/wisecfg';
 
         ## for local data placement
-        $ENV{vappio_root} = $args{ergatis_cfg}->val( 'grid', 'vappio_root' );
-        $ENV{vappio_data_placement} =
-          $args{ergatis_cfg}->val( 'grid', 'vappio_data_placement' );
+		if (defined $args{ergatis_cfg}->val( 'grid', 'vappio_root' )){
+            $ENV{vappio_root} = $args{ergatis_cfg}->val( 'grid', 'vappio_root' );
+            $ENV{vappio_data_placement} =
+                $args{ergatis_cfg}->val( 'grid', 'vappio_data_placement' );
+		}
         $ENV{PERL5LIB} =
-          "/usr/local/packages/perllib/x86_64-linux-thread-multi:$ENV{PERL5LIB}";
+          "/usr/local/packages/perllib/x86_64-linux-thread-multi:$ENV{PERL5LIB}" if (defined $ENV{PERL5LIB});
 
         ## for overwriting SGEs default
         $ENV{TMPDIR} = "/tmp";
