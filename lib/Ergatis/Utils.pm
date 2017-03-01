@@ -9,8 +9,9 @@ use Term::ProgressBar;
 
 use Exporter qw(import);
 
-our @EXPORT_OK = qw(build_twig create_progress_bar update_progress_bar handle_component_status_changes);
+our @EXPORT_OK = qw(build_twig create_progress_bar update_progress_bar handle_component_status_changes report_failure_info);
 
+### GLOBAL
 my %component_list;
 my $order;
 
@@ -22,9 +23,9 @@ my $order;
 
 sub build_twig {
     my $pipeline_xml = shift;
-	# Reset the order variable and component list hashes
-	$order = 0;
-	%component_list = ();	# Will be filled in at process_child subroutine
+    # Reset the order variable and component list hashes
+    $order = 0;
+    %component_list = ();	# Will be filled in at process_child subroutine
     # Create twig XML to populate hash of component information
     my $twig = XML::Twig->new( 'twig_handlers' => { 'commandSet' => \&process_root } );
     $twig->parsefile($pipeline_xml);
@@ -75,12 +76,11 @@ sub process_root {
 sub process_child {
     my ( $e, $parent, $component ) = @_;
     my $name;
-	my $state;
+    my $state;
     my $count = 1;
 
     # Handle cases where the XML passed is not for a particular component
-    if ( $component eq 'null' )
-    {
+    if ( $component eq 'null' ) {
         if (
             $parent->first_child_text('name') eq 'serial'
             ||    #components have one of these 3 parent names
@@ -97,7 +97,7 @@ sub process_child {
             {
 # component name is assigned... every child of component will pass cpu times to this key
 
-			    if ( $e->has_child('state') ) {
+                if ( $e->has_child('state') ) {
                     $state = $e->first_child_text('state');
                 }
                 $component = $name;
@@ -106,19 +106,23 @@ sub process_child {
                 my $end     = $e->first_child_text('endTime') if $e->has_child('endTime');
                 if (defined $start && defined $end) {
                     my $elapsed_str = get_elapsed_time( $start, $end );
-                    $component_list{$component}{'Wall'} = $elapsed_str;
+                    $component_list{$component}{'wall'} = $elapsed_str;
                 }
                 $component_list{$component}{'order'} = $order++;
-				$component_list{$component}{'state'} = $state;
+                $component_list{$component}{'state'} = $state;
+                $component_list{$component}{'stderr_files'} = '';
             }
         }
+    } else {
+        # Perform actions on identified components
+        process_components_for_stderr($e, $component);
     }
 
 #This mostly mirrors command from process_root... only dealing more with component commandSets
     foreach my $child ( $e->children('commandSet') ) {
         process_child( $child, $e, $component );
 
-		# If there is an XML file, set the file handle for opening and process that
+        # If there is an XML file, set the file handle for opening and process that
         my $file = $child->first_child_text('fileName');
         my $fh   = open_fh($file);
         if ( defined $fh ) {
@@ -137,33 +141,56 @@ sub process_child {
     }
 }
 
+# Name: process_component_for_stderr
+# Purpose: Iterate through the component's nested XML and add any stderr files to the component hash if the command failed
+# Args: XML Twig element, and the component to store stderr data for
+# Returns: Nothing 
+sub process_components_for_stderr {
+    my ($e, $component) = @_;
+    if ($component_list{$component}{'state'} =~ /(failed|error)/){
+        foreach my $command_child ( $e->children('command') ) {
+            if ($command_child->has_child('state') 
+              && $command_child->first_child_text('state') =~ /(failed|error)/) {
+                foreach my $param_child ( $command_child->children('param') ) {
+                    if ($param_child->first_child_text('key') eq 'stderr') {
+                        $component_list{$component}{'stderr_files'} .= $param_child->first_child_text('value') . "\n";
+                    }
+                }
+            }
+        }
+    }
+}
+
 # Name: report_failure_info
 # Purpose: Gather information to help diagnose a failure in the pipeline.
 # Args: Pipeline XML file
-# Returns: An array reference with the following elements:
-###	1) Array reference of failed components
-### 2) Array reference of paths to stderr files
-### 3) Number of components that have completed running
-### 4) Total number of components in the pipeline
+# Returns: An hash reference with the following elements:
+### Array reference of failed components
+### String of STDERR file paths, seperated by newline char per file
+### Number of components that have completed running
+### Total number of components in the pipeline
 
 sub report_failure_info {
-    my ($pipeline_xml) = shift;
+    my $pipeline_xml = shift;
     build_twig($pipeline_xml);
-	# Get progress rate information
-	my ($total_complete, $total) = get_progress_rate_from_href(\%component_list);
-	my $failed_components = find_failed_components(\%component_list);
+    # Get progress rate information
+    my ($total_complete, $total) = get_progress_rate_from_href(\%component_list);
+    my $failed_components = find_failed_components(\%component_list);
 
-    my $stderr_files = undef;   # Placeholder for now
+    my $stderr_files = get_failed_stderr(\%component_list);
 
-    my @failure_info = [ $failed_components, $stderr_files, $total_complete, $total ];
-    return \@failure_info;
+    my %failure_info = ('components' => $failed_components, 
+      'stderr_files' => $stderr_files, 
+      'complete_components' => $total_complete, 
+      'total_components' => $total );
+    return \%failure_info;
 }
 
 # Name: get_progress_rate_from_href
 # Purpose: Parse through hash of component information and return the number of completed components and total components
 # Args: hashref of component list information.  Can be created via XML::Twig from report_failure_info()
 # Returns: Two variables
-###	1) Integer of total components with a 'complete' status
+### 1) Integer of total components with a 'complete' status
 ### 2) Integer of total components
 
 sub get_progress_rate_from_href {
@@ -180,18 +207,13 @@ sub get_progress_rate_from_href {
 # Purpose: Parse pipeline XML and return the number of completed components and total components
 # Args: path to a pipeline XML file
 # Returns: Two variables
-###	1) Integer of total components with a 'complete' status
+### 1) Integer of total components with a 'complete' status
 ### 2) Integer of total components
 
 sub get_progress_rate_from_xml {
     my $pipeline_xml = shift;
     build_twig($pipeline_xml);
-
-	# parse components array and count number of elements and 'complete' elements
-	my $total = scalar keys %component_list;
-	my @complete = grep { $component_list{$_}->{'state'} eq 'complete'} keys %component_list;
-	my $complete = scalar @complete;
-	return ($complete, $total);
+    return get_progress_rate_from_href(\%component_list);
 }
 
 # Name: find_failed_components
@@ -199,13 +221,23 @@ sub get_progress_rate_from_xml {
 # Args: Hashref of component list information.  Can be created via XML::Twig from report_failure_info()
 # Returns: Array reference of failed components
 sub find_failed_components {
-	my $component_href = shift;
-	my @failed_components = grep { $component_href->{$_}->{'state'} =~ /(failed|error)/ } keys %$component_href;
-	return \@failed_components
+    my $component_href = shift;
+    my @failed_components = grep { $component_href->{$_}->{'state'} =~ /(failed|error)/ } (sort { $component_href->{$a}->{'order'} <=> $component_href->{$b}->{'order'} } keys %$component_href);
+    return \@failed_components;
 }
 
+# Name: get_failed_stderr
+# Purpose: Compile a list of stderr files for every component in failed or error state
+# Args: Hashref of component list information.  Can be created via XML::Twig from report_failure_info()
+# Returns: Array reference of stderr file paths
 sub get_failed_stderr {
-
+    my $component_href = shift;
+    my $stderr_files;
+    foreach my $component (sort { $component_href->{$a}->{'order'} <=> $component_href->{$b}->{'order'} } keys %$component_href) {
+        # Any STDERR files that are not null strings, add to string
+        $stderr_files .= $component_href->{$component}->{'stderr_files'} . "\n" if length $component_href->{$component}->{'stderr_files'};
+    }
+    return $stderr_files;
 }
 
 # Name: handle_component_status_changes
@@ -217,7 +249,9 @@ sub get_failed_stderr {
 sub handle_component_status_changes {
     my ($component_href, $prev_states) = @_;
 
-    foreach my $component (keys %$prev_states) {
+    foreach my $component (
+        sort { $component_href->{$a}->{'order'} <=> $component_href->{$b}->{'order'} } keys %$component_href
+    ) {
         my $old_state = $prev_states->{$component};
         my $new_state = $component_href->{$component}->{'state'};
         next if ( $old_state eq "complete" ); # Complete components do not change
@@ -226,10 +260,16 @@ sub handle_component_status_changes {
         my $printed;
         ($printed = $new_state) =~ s/([\w']+)/\u\L$1/g;
         # Handle the various updated component states
+
+        # First a special case, where the component started and finished before the next sleep cycle
+        if ($old_state eq "incomplete" && $new_state =~ /^(complete|error|failed)/) {
+            print STDOUT "== Running: $component\n";
+        }
+
         if ($new_state eq "running") {
             print STDOUT "== $printed: $component\n";
         } elsif ($new_state =~ /^(complete|error|failed)/) {
-            my $elapsed = $component_href->{$component}->{'Wall'};
+            my $elapsed = $component_href->{$component}->{'wall'};
             print STDOUT "==== $printed: $component $elapsed\n\n";
         }
     }
