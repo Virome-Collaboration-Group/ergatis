@@ -601,6 +601,8 @@ umask(0000);
             # Return a hash of useful diagnostics
             $self->{diagnostics} = report_failure_info($self->{path}, $self->{id});
             print STDERR "Pipeline running time exceed max time limit.  Pipeline killed\n" if $timeout_flag;
+
+			return 999 if $timeout_flag;
         }
         return 0;
     }
